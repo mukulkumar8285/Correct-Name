@@ -43,6 +43,11 @@ const transporter = nodemailer.createTransport({
   },
 });
 
+// Helper to validate cron expression
+function isValidCron(expression) {
+  return cron.validate(expression);
+}
+
 // Function to log task execution
 async function logTaskExecution(taskName, status) {
   const log = new TaskLog({ taskName, status, timestamp: new Date() });
@@ -54,20 +59,24 @@ async function logTaskExecution(taskName, status) {
 async function sendScheduledEmails() {
   const schedules = await Schedule.find();
   schedules.forEach(schedule => {
-    cron.schedule(schedule.schedule, async () => {
-      try {
-        await transporter.sendMail({
-          from: process.env.EMAIL_USER,
-          to: schedule.email,
-          subject: schedule.subject,
-          text: schedule.message,
-        });
-        await logTaskExecution(`Email to ${schedule.email}`, 'Success');
-      } catch (error) {
-        await logTaskExecution(`Email to ${schedule.email}`, 'Failed');
-        console.error('Error sending email:', error);
-      }
-    });
+    if (isValidCron(schedule.schedule)) {
+      cron.schedule(schedule.schedule, async () => {
+        try {
+          await transporter.sendMail({
+            from: process.env.EMAIL_USER,
+            to: schedule.email,
+            subject: schedule.subject,
+            text: schedule.message,
+          });
+          await logTaskExecution(`Email to ${schedule.email}`, 'Success');
+        } catch (error) {
+          await logTaskExecution(`Email to ${schedule.email}`, 'Failed');
+          console.error('Error sending email:', error);
+        }
+      });
+    } else {
+      console.error(`Invalid cron expression: ${schedule.schedule}`);
+    }
   });
 }
 
@@ -77,11 +86,16 @@ sendScheduledEmails();
 // Routes
 app.post('/schedule-email', async (req, res) => {
   const { email, subject, message, schedule } = req.body;
+
+  if (!isValidCron(schedule)) {
+    return res.status(400).json({ message: 'Invalid cron expression' });
+  }
+
   try {
     const newSchedule = new Schedule({ email, subject, message, schedule });
     await newSchedule.save();
     res.json({ message: 'Email scheduled successfully' });
-    sendScheduledEmails(); // Re-run to include new schedules
+    await sendScheduledEmails(); // Include new schedules
   } catch (error) {
     res.status(500).json({ message: 'Error scheduling email' });
   }
@@ -99,6 +113,11 @@ app.get('/schedules/:id', async (req, res) => {
 
 app.put('/schedules/:id', async (req, res) => {
   const { email, subject, message, schedule } = req.body;
+
+  if (!isValidCron(schedule)) {
+    return res.status(400).json({ message: 'Invalid cron expression' });
+  }
+
   try {
     await Schedule.findByIdAndUpdate(req.params.id, { email, subject, message, schedule });
     res.json({ message: 'Schedule updated successfully' });
